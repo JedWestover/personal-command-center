@@ -1,8 +1,26 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { CalendarDays, Check, CheckCircle2, Circle, Inbox, ListChecks, NotebookPen, Sparkles, Target, Zap } from "lucide-react";
-import { calendar, initialHabits, notes, priorities, type AccountMode } from "@/lib/mock-data";
+import { useEffect, useMemo, useState } from "react";
+import { signOut } from "next-auth/react";
+import { CalendarDays, Check, CheckCircle2, Circle, Inbox, ListChecks, LogOut, NotebookPen, Sparkles, Target, Zap } from "lucide-react";
+import { initialHabits, notes, priorities, type AccountMode } from "@/lib/mock-data";
+
+type CalendarEvent = {
+  id: string;
+  title: string;
+  start: string;
+  isAllDay: boolean;
+  scope: "work" | "personal";
+  color: string;
+};
+
+function formatEventTime(event: CalendarEvent) {
+  if (event.isAllDay) {
+    return "All day";
+  }
+
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(event.start));
+}
 
 const filterScope = <T extends { scope: "work" | "personal" }>(items: T[], mode: AccountMode) =>
   mode === "all" ? items : items.filter((item) => item.scope === mode);
@@ -16,20 +34,63 @@ function Card({ title, icon, children, className = "" }: { title: string; icon: 
   );
 }
 
-export default function Dashboard() {
+export default function Dashboard({ userName }: { userName: string }) {
   const [mode, setMode] = useState<AccountMode>("all");
   const [habits, setHabits] = useState(initialHabits);
+  const [calendar, setCalendar] = useState<CalendarEvent[]>([]);
+  const [calendarLoading, setCalendarLoading] = useState(true);
+  const [localDate, setLocalDate] = useState("Today");
+  const [timeOfDay, setTimeOfDay] = useState("afternoon");
   const filteredPriorities = useMemo(() => filterScope(priorities, mode), [mode]);
-  const filteredCalendar = useMemo(() => filterScope(calendar, mode), [mode]);
+  const filteredCalendar = useMemo(() => filterScope(calendar, mode), [calendar, mode]);
   const filteredNotes = useMemo(() => filterScope(notes, mode), [mode]);
+
+  useEffect(() => {
+    const loadCalendar = async () => {
+      try {
+        const response = await fetch("/api/dashboard");
+        if (!response.ok) {
+          throw new Error("Calendar request failed");
+        }
+
+        const data = (await response.json()) as { calendar: CalendarEvent[] };
+        setCalendar(data.calendar);
+      } finally {
+        setCalendarLoading(false);
+      }
+    };
+
+    void loadCalendar();
+  }, []);
+
+  useEffect(() => {
+    const updateLocalTime = () => {
+      const now = new Date();
+      const hour = now.getHours();
+
+      setLocalDate(new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" }).format(now));
+      setTimeOfDay(hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening");
+    };
+
+    updateLocalTime();
+    const interval = window.setInterval(updateLocalTime, 60_000);
+
+    return () => window.clearInterval(interval);
+  }, []);
 
   return (
     <main className="min-h-screen">
       <header className="border-b border-slate-200 bg-white/90 backdrop-blur">
         <div className="mx-auto flex max-w-7xl flex-col gap-4 px-5 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div><p className="mb-1 text-xs font-bold uppercase tracking-[0.2em] text-indigo-600">Sunday, September 20</p><h1 className="text-2xl font-black tracking-tight sm:text-3xl">Good afternoon, Alex.</h1><p className="mt-1 text-sm text-slate-500">Here is what deserves your attention today.</p></div>
-          <div className="flex rounded-2xl bg-slate-100 p-1" aria-label="Account filter">
-            {(["all", "work", "personal"] as AccountMode[]).map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-xl px-4 py-2 text-sm font-semibold capitalize transition ${mode === item ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>{item}</button>)}
+          <div><p className="mb-1 text-xs font-bold uppercase tracking-[0.2em] text-indigo-600">{localDate}</p><h1 className="text-2xl font-black tracking-tight sm:text-3xl">Good {timeOfDay}, {userName}.</h1><p className="mt-1 text-sm text-slate-500">Here is what deserves your attention today.</p></div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex rounded-2xl bg-slate-100 p-1" aria-label="Account filter">
+              {["all", "work", "personal"].map((item) => <button key={item} onClick={() => setMode(item as AccountMode)} className={`rounded-xl px-4 py-2 text-sm font-semibold capitalize transition ${mode === item ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>{item}</button>)}
+            </div>
+            <button type="button" onClick={() => signOut()} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900" aria-label="Sign out">
+              <LogOut className="h-4 w-4" />
+              <span>Sign out</span>
+            </button>
           </div>
         </div>
       </header>
@@ -46,7 +107,7 @@ export default function Dashboard() {
           </Card>
 
           <Card title="Calendar" icon={<CalendarDays className="h-5 w-5 text-indigo-600" />} className="lg:col-span-7">
-            <div className="space-y-1">{filteredCalendar.map((event) => <div key={event.id} className="grid grid-cols-[72px_12px_1fr] items-center gap-3 border-b border-slate-100 py-3 last:border-0"><span className="text-xs font-bold text-slate-500">{event.time}</span><span className={`h-2.5 w-2.5 rounded-full ${event.color}`} /><div><p className="text-sm font-semibold">{event.title}</p><p className="text-xs capitalize text-slate-400">{event.scope} calendar</p></div></div>)}</div>
+            <div className="space-y-1">{calendarLoading ? <p className="py-3 text-sm text-slate-500">Loading calendar...</p> : filteredCalendar.length === 0 ? <p className="py-3 text-sm text-slate-500">No upcoming events.</p> : filteredCalendar.map((event) => <div key={event.id} className="grid grid-cols-[72px_12px_1fr] items-center gap-3 border-b border-slate-100 py-3 last:border-0"><span className="text-xs font-bold text-slate-500">{formatEventTime(event)}</span><span className={`h-2.5 w-2.5 rounded-full ${event.color}`} /><div><p className="text-sm font-semibold">{event.title}</p><p className="text-xs capitalize text-slate-400">{event.scope} calendar</p></div></div>)}</div>
           </Card>
 
           <Card title="Quick Notes" icon={<NotebookPen className="h-5 w-5 text-indigo-600" />} className="lg:col-span-5">
