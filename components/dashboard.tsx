@@ -39,6 +39,7 @@ export default function Dashboard({ userName }: { userName: string }) {
   const [habits, setHabits] = useState(initialHabits);
   const [calendar, setCalendar] = useState<CalendarEvent[]>([]);
   const [calendarLoading, setCalendarLoading] = useState(true);
+  const [googleConnected, setGoogleConnected] = useState(false);
   const [localDate, setLocalDate] = useState("Today");
   const [timeOfDay, setTimeOfDay] = useState("afternoon");
   const filteredPriorities = useMemo(() => filterScope(priorities, mode), [mode]);
@@ -53,8 +54,9 @@ export default function Dashboard({ userName }: { userName: string }) {
           throw new Error("Calendar request failed");
         }
 
-        const data = (await response.json()) as { calendar: CalendarEvent[] };
+        const data = (await response.json()) as { calendar: CalendarEvent[]; googleConnected?: boolean };
         setCalendar(data.calendar);
+        setGoogleConnected(Boolean(data.googleConnected));
       } finally {
         setCalendarLoading(false);
       }
@@ -87,10 +89,15 @@ export default function Dashboard({ userName }: { userName: string }) {
             <div className="flex rounded-2xl bg-slate-100 p-1" aria-label="Account filter">
               {["all", "work", "personal"].map((item) => <button key={item} onClick={() => setMode(item as AccountMode)} className={`rounded-xl px-4 py-2 text-sm font-semibold capitalize transition ${mode === item ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>{item}</button>)}
             </div>
-            <button type="button" onClick={() => signOut()} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900" aria-label="Sign out">
-              <LogOut className="h-4 w-4" />
-              <span>Sign out</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <a href="/api/google/connect" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900">
+                {googleConnected ? "Reconnect Google" : "Connect Google"}
+              </a>
+              <button type="button" onClick={() => signOut()} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900" aria-label="Sign out">
+                <LogOut className="h-4 w-4" />
+                <span>Sign out</span>
+              </button>
+            </div>
           </div>
         </div>
       </header>
