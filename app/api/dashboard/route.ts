@@ -166,9 +166,9 @@ export async function GET() {
     if (tokens.refresh_token) rotatedRefreshTokens[slot] = tokens.refresh_token;
   }
 
-  if (!microsoftTokens.work && session?.accessToken) {
-    microsoftTokens.work = session.accessToken;
-    microsoftConnections.work = true;
+  if (!microsoftTokens.personal && session?.accessToken) {
+    microsoftTokens.personal = session.accessToken;
+    microsoftConnections.personal = true;
     livePriorities.push(
       ...(await loadMicrosoftPriorities(session.accessToken)),
     );

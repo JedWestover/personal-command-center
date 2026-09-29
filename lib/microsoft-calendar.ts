@@ -136,6 +136,7 @@ export function microsoftAuthorizationUrl(state: string, redirectUri: string) {
     redirect_uri: redirectUri,
     response_type: "code",
     response_mode: "query",
+    prompt: "select_account",
     scope: MICROSOFT_SCOPE,
     state,
   });
