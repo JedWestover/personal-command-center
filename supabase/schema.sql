@@ -20,6 +20,14 @@ create table if not exists public.habit_checkins (
   unique (habit_id, completed_on)
 );
 
+create table if not exists public.water_intake (
+  id uuid primary key default gen_random_uuid(),
+  owner_email text not null,
+  amount_ounces int not null check (amount_ounces between 1 and 128),
+  consumed_on date not null default current_date,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.goals (
   id uuid primary key default gen_random_uuid(),
   owner_email text not null,
@@ -75,6 +83,7 @@ create table if not exists private.linked_account_secrets (
 
 alter table public.habits enable row level security;
 alter table public.habit_checkins enable row level security;
+alter table public.water_intake enable row level security;
 alter table public.goals enable row level security;
 alter table public.quick_notes enable row level security;
 alter table public.linked_accounts enable row level security;
@@ -87,6 +96,11 @@ create policy "Users manage own habits" on public.habits for all
 
 drop policy if exists "Users manage own checkins" on public.habit_checkins;
 create policy "Users manage own checkins" on public.habit_checkins for all
+  using ((auth.jwt() ->> 'email') = owner_email)
+  with check ((auth.jwt() ->> 'email') = owner_email);
+
+drop policy if exists "Users manage own water intake" on public.water_intake;
+create policy "Users manage own water intake" on public.water_intake for all
   using ((auth.jwt() ->> 'email') = owner_email)
   with check ((auth.jwt() ->> 'email') = owner_email);
 
@@ -113,16 +127,20 @@ create policy "Users manage own selected calendars" on public.selected_calendar_
 -- Browser roles cannot access app-owned rows. The server-only service role is
 -- used by Next.js and bypasses RLS while still applying owner_email filters.
 revoke all on public.habits, public.habit_checkins, public.goals,
-  public.quick_notes, public.linked_accounts, public.selected_calendar_ids
+  public.water_intake, public.quick_notes, public.linked_accounts,
+  public.selected_calendar_ids
   from anon, authenticated;
 revoke all on private.linked_account_secrets from anon, authenticated;
 grant all on public.habits, public.habit_checkins, public.goals,
-  public.quick_notes, public.linked_accounts, public.selected_calendar_ids
+  public.water_intake, public.quick_notes, public.linked_accounts,
+  public.selected_calendar_ids
   to service_role;
 grant all on private.linked_account_secrets to service_role;
 
 create index if not exists habits_owner_email_idx on public.habits(owner_email);
 create index if not exists habit_checkins_owner_email_idx on public.habit_checkins(owner_email);
+create index if not exists water_intake_owner_date_idx
+  on public.water_intake(owner_email, consumed_on, created_at desc);
 create index if not exists goals_owner_email_idx on public.goals(owner_email);
 create index if not exists quick_notes_owner_email_idx on public.quick_notes(owner_email);
 create index if not exists linked_accounts_owner_email_idx on public.linked_accounts(owner_email);

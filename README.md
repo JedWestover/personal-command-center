@@ -88,6 +88,8 @@ For true multi-account support, store one encrypted connection record per signed
 4. Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. It must never be prefixed with `NEXT_PUBLIC_` or imported by client components.
 5. Replace mock habits and goals with server-side Supabase reads and writes, always filtering by the signed-in NextAuth user's email.
 
+The daily water tracker stores each intake entry in `public.water_intake`. If your Supabase project already has the earlier schema, run the updated `supabase/schema.sql` in the SQL editor to create the table, index, and row-level security policy. The schema uses `if not exists` for tables and indexes and recreates its named policies safely.
+
 The schema enables Row Level Security on every exposed app-owned table: habits, habit check-ins, goals, quick notes, linked account metadata, and selected calendar IDs. The browser roles have no direct table permissions. Provider refresh tokens belong in `private.linked_account_secrets` as encrypted values and must only be read or written by server code. The current local OAuth implementation still uses encrypted HTTP-only cookies; migrate those credentials to this private table before using multiple devices or deploying.
 
 ### Phase 4: AI daily brief

@@ -30,6 +30,10 @@ function getCurrentStreak(checkinDates: Set<string>, today: Date) {
   let streak = 0;
   const cursor = new Date(today);
 
+  if (!checkinDates.has(dateKey(cursor))) {
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+
   while (checkinDates.has(dateKey(cursor))) {
     streak += 1;
     cursor.setUTCDate(cursor.getUTCDate() - 1);
