@@ -9,7 +9,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       issuer: process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER,
       authorization: {
         params: {
-          scope: "openid profile email offline_access User.Read Calendars.Read",
+          prompt: "select_account",
+          scope:
+            "openid profile email offline_access User.Read Calendars.Read Tasks.Read Mail.ReadBasic",
         },
       },
     }),
@@ -26,10 +28,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (account?.access_token) {
         token.accessToken = account.access_token;
         token.refreshToken = account.refresh_token;
-        token.accessTokenExpires = account.expires_at ? account.expires_at * 1000 : Date.now() + 3600 * 1000;
+        token.accessTokenExpires = account.expires_at
+          ? account.expires_at * 1000
+          : Date.now() + 3600 * 1000;
       }
 
-      if (token.accessToken && token.accessTokenExpires && Date.now() < token.accessTokenExpires - 60_000) {
+      if (
+        token.accessToken &&
+        token.accessTokenExpires &&
+        Date.now() < token.accessTokenExpires - 60_000
+      ) {
         return token;
       }
 
@@ -37,23 +45,31 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         return token;
       }
 
-      const response = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          client_id: process.env.AUTH_MICROSOFT_ENTRA_ID_ID!,
-          client_secret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
-          grant_type: "refresh_token",
-          refresh_token: token.refreshToken,
-          scope: "openid profile email offline_access User.Read Calendars.Read",
-        }),
-      });
+      const response = await fetch(
+        "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: process.env.AUTH_MICROSOFT_ENTRA_ID_ID!,
+            client_secret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
+            grant_type: "refresh_token",
+            refresh_token: token.refreshToken,
+            scope:
+              "openid profile email offline_access User.Read Calendars.Read Tasks.Read Mail.ReadBasic",
+          }),
+        },
+      );
 
       if (!response.ok) {
         return token;
       }
 
-      const refreshed = (await response.json()) as { access_token: string; expires_in: number; refresh_token?: string };
+      const refreshed = (await response.json()) as {
+        access_token: string;
+        expires_in: number;
+        refresh_token?: string;
+      };
       token.accessToken = refreshed.access_token;
       token.accessTokenExpires = Date.now() + refreshed.expires_in * 1000;
       token.refreshToken = refreshed.refresh_token ?? token.refreshToken;
@@ -64,7 +80,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.accessToken = token.accessToken;
 
       if (session.user) {
-        session.user.name = token.name ?? session.user.name ?? token.email ?? null;
+        session.user.name =
+          token.name ?? session.user.name ?? token.email ?? null;
       }
 
       return session;

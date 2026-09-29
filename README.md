@@ -55,6 +55,22 @@ git push -u origin main
 
 Register a Microsoft Entra application that supports both organizational directories and personal Microsoft accounts. Use the `common` tenant and delegated Microsoft Graph permissions. Keep tokens and Graph calls on the server side.
 
+In the app registration, choose **Accounts in any organizational directory and personal Microsoft accounts** as the supported account type. Set `AUTH_MICROSOFT_ENTRA_ID_ISSUER` to `https://login.microsoftonline.com/common/v2.0`, then restart the dev server after changing `.env.local`. The sign-in flow shows Microsoft's account picker so you can switch between a work account and a personal account.
+
+The current session holds one Microsoft account at a time. Supporting both Microsoft accounts simultaneously requires a linked-connections table with one encrypted refresh token per account, plus a separate "Connect work" / "Connect personal" OAuth flow. Do not try to store both refresh tokens in the single NextAuth JWT.
+
+The dashboard now provides separate **Connect work** and **Connect personal** buttons. Sign in to the app first, connect one Microsoft account in each slot, and approve the `Calendars.Read` permission for both. Their events are then merged into the calendar and can be filtered with the `all`, `work`, and `personal` controls. The connections are kept in encrypted, HTTP-only browser cookies for this local version; move them to an encrypted database table before deploying multi-device or production support.
+
+For the separate account connections, register this exact redirect URI under the Entra app's **Web** platform:
+
+```text
+http://localhost:3000/api/microsoft/callback
+```
+
+The URI must match `AUTH_URL` and the address in the browser exactly, including protocol, hostname, port, and path. The standard app sign-in also needs `http://localhost:3000/api/auth/callback/microsoft-entra-id` registered.
+
+Microsoft task priorities use read-only Graph permissions: `Tasks.Read` for personal To Do and work Planner tasks, plus `Mail.ReadBasic` only for the optional flagged-email source. Flagged email tasks remain disabled unless `MICROSOFT_ENABLE_FLAGGED_EMAIL_TASKS=true` is explicitly set. The app does not request task or mail write permissions. After changing scopes, sign out and sign in again to grant consent for the updated permissions.
+
 Suggested data sources:
 
 - Calendar: Microsoft Graph calendar endpoints
@@ -68,8 +84,11 @@ For true multi-account support, store one encrypted connection record per signed
 
 1. Create a Supabase project.
 2. Run `supabase/schema.sql` in the SQL editor.
-3. Copy `.env.example` to `.env.local` and add the project URL and publishable key.
-4. Replace mock habits and goals with authenticated Supabase reads and writes.
+3. Copy `.env.example` to `.env.local` and add the project URL, publishable key, and server-only service-role key.
+4. Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. It must never be prefixed with `NEXT_PUBLIC_` or imported by client components.
+5. Replace mock habits and goals with server-side Supabase reads and writes, always filtering by the signed-in NextAuth user's email.
+
+The schema enables Row Level Security on every exposed app-owned table: habits, habit check-ins, goals, quick notes, linked account metadata, and selected calendar IDs. The browser roles have no direct table permissions. Provider refresh tokens belong in `private.linked_account_secrets` as encrypted values and must only be read or written by server code. The current local OAuth implementation still uses encrypted HTTP-only cookies; migrate those credentials to this private table before using multiple devices or deploying.
 
 ### Phase 4: AI daily brief
 
