@@ -17,6 +17,7 @@ import {
   Target,
   Undo2,
   UserRound,
+  X,
   Zap,
 } from "lucide-react";
 type AccountMode = "all" | "work" | "personal" | "family";
@@ -35,6 +36,15 @@ type PriorityItem = {
   title: string;
   scope: "work" | "personal" | "family";
   done: boolean;
+  source: "todo" | "planner" | "event" | "habit" | "goal" | "email";
+  dueAt?: string;
+};
+
+type Goal = {
+  id: string;
+  title: string;
+  status: "active" | "paused" | "completed";
+  targetDate: string | null;
 };
 
 type Habit = {
@@ -95,6 +105,15 @@ const filterScope = <T extends { scope: "work" | "personal" | "family" }>(
   items: T[],
   mode: AccountMode,
 ) => (mode === "all" ? items : items.filter((item) => item.scope === mode));
+
+const prioritySourceLabels: Record<PriorityItem["source"], string> = {
+  todo: "Overdue To Do",
+  planner: "Planner",
+  event: "Calendar",
+  habit: "Habit",
+  goal: "Goal",
+  email: "Email",
+};
 
 function generateDailyBrief({
   priorities,
@@ -161,11 +180,18 @@ function Card({
 export default function Dashboard({ userName }: { userName: string }) {
   const [mode, setMode] = useState<AccountMode>("all");
   const [priorities, setPriorities] = useState<PriorityItem[]>([]);
+  const [priorityActionId, setPriorityActionId] = useState<string | number | null>(null);
+  const [priorityError, setPriorityError] = useState("");
   const [habits, setHabits] = useState<Habit[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
   const [habitName, setHabitName] = useState("");
   const [habitSaving, setHabitSaving] = useState(false);
   const [habitError, setHabitError] = useState("");
+  const [goalTitle, setGoalTitle] = useState("");
+  const [goalTargetDate, setGoalTargetDate] = useState("");
+  const [goalSaving, setGoalSaving] = useState(false);
+  const [goalError, setGoalError] = useState("");
   const [waterDate] = useState(() => localDateKey(new Date()));
   const [waterSnapshot, setWaterSnapshot] = useState<WaterSnapshot | null>(null);
   const [waterLoading, setWaterLoading] = useState(true);
@@ -206,10 +232,31 @@ export default function Dashboard({ userName }: { userName: string }) {
       { value: "family", label: "Family", color: "bg-green-500" },
     ];
 
+  const refreshPriorities = async () => {
+    try {
+      const now = new Date();
+      const params = new URLSearchParams({
+        date: localDateKey(now),
+        timezoneOffsetMinutes: String(now.getTimezoneOffset()),
+      });
+      const response = await fetch(`/api/dashboard?${params}`);
+      if (!response.ok) return;
+      const data = (await response.json()) as { priorities?: PriorityItem[] };
+      setPriorities(data.priorities ?? []);
+    } catch {
+      return;
+    }
+  };
+
   useEffect(() => {
     const loadCalendar = async () => {
       try {
-        const response = await fetch("/api/dashboard");
+        const now = new Date();
+        const params = new URLSearchParams({
+          date: localDateKey(now),
+          timezoneOffsetMinutes: String(now.getTimezoneOffset()),
+        });
+        const response = await fetch(`/api/dashboard?${params}`);
         if (!response.ok) {
           throw new Error("Calendar request failed");
         }
@@ -250,6 +297,22 @@ export default function Dashboard({ userName }: { userName: string }) {
     };
 
     void loadHabits();
+  }, []);
+
+  useEffect(() => {
+    const loadGoals = async () => {
+      try {
+        const response = await fetch("/api/goals");
+        if (!response.ok) throw new Error("Goal request failed");
+        const data = (await response.json()) as { goals: Goal[] };
+        setGoals(data.goals);
+        setGoalError("");
+      } catch {
+        setGoalError("Connect Supabase to save goals.");
+      }
+    };
+
+    void loadGoals();
   }, []);
 
   useEffect(() => {
@@ -296,6 +359,7 @@ export default function Dashboard({ userName }: { userName: string }) {
       if (!response.ok) throw new Error("Habit update failed");
       const data = (await response.json()) as { habits: Habit[] };
       setHabits(data.habits);
+      await refreshPriorities();
     } catch {
       setHabits(previousHabits);
       setHabitError("Unable to update habit.");
@@ -317,11 +381,106 @@ export default function Dashboard({ userName }: { userName: string }) {
       if (!response.ok) throw new Error("Habit creation failed");
       const data = (await response.json()) as { habits: Habit[] };
       setHabits(data.habits);
+      await refreshPriorities();
       setHabitName("");
     } catch {
       setHabitError("Unable to add habit.");
     } finally {
       setHabitSaving(false);
+    }
+  };
+
+  const addGoal = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!goalTitle.trim()) return;
+
+    setGoalSaving(true);
+    setGoalError("");
+    try {
+      const response = await fetch("/api/goals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: goalTitle, targetDate: goalTargetDate || null }),
+      });
+      if (!response.ok) throw new Error("Goal creation failed");
+      const data = (await response.json()) as { goals: Goal[] };
+      setGoals(data.goals);
+      await refreshPriorities();
+      setGoalTitle("");
+      setGoalTargetDate("");
+    } catch {
+      setGoalError("Unable to add goal.");
+    } finally {
+      setGoalSaving(false);
+    }
+  };
+
+  const toggleGoal = async (goal: Goal) => {
+    setGoalError("");
+    try {
+      const response = await fetch("/api/goals", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goalId: goal.id,
+          status: goal.status === "completed" ? "active" : "completed",
+        }),
+      });
+      if (!response.ok) throw new Error("Goal update failed");
+      const data = (await response.json()) as { goals: Goal[] };
+      setGoals(data.goals);
+      await refreshPriorities();
+    } catch {
+      setGoalError("Unable to update goal.");
+    }
+  };
+
+  const handlePriorityAction = async (item: PriorityItem) => {
+    setPriorityActionId(item.id);
+    setPriorityError("");
+    try {
+      if (item.source === "habit") {
+        const response = await fetch("/api/habits", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            habitId: String(item.id).slice("habit-".length),
+            done: true,
+          }),
+        });
+        if (!response.ok) throw new Error("Habit completion failed");
+        const data = (await response.json()) as { habits: Habit[] };
+        setHabits(data.habits);
+        await refreshPriorities();
+      } else if (item.source === "goal") {
+        const response = await fetch("/api/goals", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            goalId: String(item.id).slice("goal-".length),
+            status: "completed",
+          }),
+        });
+        if (!response.ok) throw new Error("Goal completion failed");
+        const data = (await response.json()) as { goals: Goal[] };
+        setGoals(data.goals);
+        await refreshPriorities();
+      } else {
+        const response = await fetch("/api/priorities/dismiss", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            priorityId: item.id,
+            date: localDateKey(new Date()),
+          }),
+        });
+        if (!response.ok) throw new Error("Priority dismissal failed");
+        setPriorities((current) => current.filter((priority) => priority.id !== item.id));
+      }
+    } catch {
+      setPriorityError("Unable to update this priority.");
+    } finally {
+      setPriorityActionId(null);
     }
   };
 
@@ -493,28 +652,43 @@ export default function Dashboard({ userName }: { userName: string }) {
                       {group.label}
                     </h3>
                     <div className="space-y-2">
-                      {groupItems.map((item) => (
-                        <div
-                          key={item.id}
-                          className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3"
-                        >
-                          <span
-                            className={`grid h-5 w-5 shrink-0 place-items-center rounded-md border ${item.done ? "border-emerald-500 bg-emerald-500" : "border-slate-300 bg-white"}`}
-                            aria-label={
-                              item.done ? "Completed" : "Not completed"
-                            }
+                      {groupItems.map((item) => {
+                        const canComplete =
+                          item.source === "habit" || item.source === "goal";
+                        const actionLabel = canComplete
+                          ? `Complete ${prioritySourceLabels[item.source].toLowerCase()}`
+                          : `Dismiss ${prioritySourceLabels[item.source].toLowerCase()}`;
+
+                        return (
+                          <div
+                            key={item.id}
+                            className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3"
                           >
-                            {item.done && (
-                              <Check className="h-3.5 w-3.5 text-white" />
-                            )}
-                          </span>
-                          <span
-                            className={`flex-1 text-sm font-semibold ${item.done ? "text-slate-400 line-through" : "text-slate-700"}`}
-                          >
-                            {item.title}
-                          </span>
-                        </div>
-                      ))}
+                            <button
+                              type="button"
+                              onClick={() => void handlePriorityAction(item)}
+                              disabled={priorityActionId === item.id}
+                              className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg transition disabled:cursor-wait disabled:opacity-50 ${canComplete ? "text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" : "text-slate-400 hover:bg-rose-50 hover:text-rose-600"}`}
+                              aria-label={`${actionLabel}: ${item.title}`}
+                              title={`${actionLabel}: ${item.title}`}
+                            >
+                              {canComplete ? (
+                                <Circle className="h-5 w-5" />
+                              ) : (
+                                <X className="h-5 w-5" />
+                              )}
+                            </button>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-sm font-semibold text-slate-700">
+                                {item.title}
+                              </span>
+                              <span className="mt-1 block text-[10px] font-medium uppercase text-slate-400">
+                                {prioritySourceLabels[item.source]}
+                              </span>
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -522,6 +696,11 @@ export default function Dashboard({ userName }: { userName: string }) {
               {filteredPriorities.length === 0 && (
                 <p className="py-3 text-sm text-slate-500">
                   No priorities today.
+                </p>
+              )}
+              {priorityError && (
+                <p className="text-xs text-rose-600" role="status">
+                  {priorityError}
                 </p>
               )}
             </div>
@@ -532,7 +711,7 @@ export default function Dashboard({ userName }: { userName: string }) {
             icon={<CalendarDays className="h-5 w-5 text-indigo-600" />}
             className="lg:col-span-7"
           >
-            <div className="space-y-1">
+            <div className="max-h-72 space-y-1 overflow-y-auto pr-2">
               {calendarLoading ? (
                 <p className="py-3 text-sm text-slate-500">
                   Loading calendar...
@@ -734,6 +913,80 @@ export default function Dashboard({ userName }: { userName: string }) {
                 {waterError || "Water intake is unavailable."}
               </p>
             )}
+          </Card>
+
+          <Card
+            title="Goals"
+            icon={<Target className="h-5 w-5 text-indigo-600" />}
+            className="lg:col-span-4"
+          >
+            <form onSubmit={addGoal} className="mb-4 space-y-2">
+              <input
+                value={goalTitle}
+                onChange={(event) => setGoalTitle(event.target.value)}
+                placeholder="Add a goal"
+                maxLength={120}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                aria-label="New goal title"
+              />
+              <div className="flex gap-2">
+                <input
+                  type="date"
+                  value={goalTargetDate}
+                  onChange={(event) => setGoalTargetDate(event.target.value)}
+                  className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-600 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                  aria-label="Goal target date"
+                />
+                <button
+                  type="submit"
+                  disabled={goalSaving || !goalTitle.trim()}
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-indigo-600 text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="Add goal"
+                  title="Add goal"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+            </form>
+            <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
+              {goals.map((goal) => (
+                <div key={goal.id} className="flex items-start gap-2 rounded-xl px-2 py-2 hover:bg-slate-50">
+                  <button
+                    type="button"
+                    onClick={() => void toggleGoal(goal)}
+                    className="mt-0.5 shrink-0"
+                    aria-label={
+                      goal.status === "completed"
+                        ? `Reopen ${goal.title}`
+                        : `Complete ${goal.title}`
+                    }
+                    title={goal.status === "completed" ? "Reopen goal" : "Complete goal"}
+                  >
+                    {goal.status === "completed" ? (
+                      <Check className="h-5 w-5 rounded-md bg-emerald-500 p-1 text-white" />
+                    ) : (
+                      <Circle className="h-5 w-5 text-slate-300" />
+                    )}
+                  </button>
+                  <span className="min-w-0 flex-1">
+                    <span
+                      className={`block text-sm font-semibold ${goal.status === "completed" ? "text-slate-400 line-through" : "text-slate-700"}`}
+                    >
+                      {goal.title}
+                    </span>
+                    {goal.targetDate && (
+                      <span className="mt-1 block text-[11px] text-slate-400">
+                        Target {goal.targetDate}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              ))}
+              {goals.length === 0 && !goalError && (
+                <p className="py-2 text-sm text-slate-500">No goals yet.</p>
+              )}
+            </div>
+            {goalError && <p className="mt-3 text-xs text-rose-600">{goalError}</p>}
           </Card>
 
           <Card

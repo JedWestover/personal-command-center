@@ -90,6 +90,10 @@ For true multi-account support, store one encrypted connection record per signed
 
 The daily water tracker stores each intake entry in `public.water_intake`. If your Supabase project already has the earlier schema, run the updated `supabase/schema.sql` in the SQL editor to create the table, index, and row-level security policy. The schema uses `if not exists` for tables and indexes and recreates its named policies safely.
 
+The dashboard generates priorities from today's calendar events, overdue Microsoft To Do tasks, unfinished Planner tasks, habits not checked off today, and active goals. Create and complete goals in the Goals card; active goals appear in Today's Priorities until completed.
+
+Dismissed read-only priorities are stored per user and date in `public.priority_dismissals`. Run the updated `supabase/schema.sql` in Supabase before using the dismiss action on an existing project.
+
 The schema enables Row Level Security on every exposed app-owned table: habits, habit check-ins, goals, quick notes, linked account metadata, and selected calendar IDs. The browser roles have no direct table permissions. Provider refresh tokens belong in `private.linked_account_secrets` as encrypted values and must only be read or written by server code. The current local OAuth implementation still uses encrypted HTTP-only cookies; migrate those credentials to this private table before using multiple devices or deploying.
 
 ### Phase 4: AI daily brief

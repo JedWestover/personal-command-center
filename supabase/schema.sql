@@ -37,6 +37,15 @@ create table if not exists public.goals (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.priority_dismissals (
+  id uuid primary key default gen_random_uuid(),
+  owner_email text not null,
+  priority_id text not null,
+  dismissed_on date not null default current_date,
+  created_at timestamptz not null default now(),
+  unique (owner_email, priority_id, dismissed_on)
+);
+
 create table if not exists public.quick_notes (
   id uuid primary key default gen_random_uuid(),
   owner_email text not null,
@@ -85,6 +94,7 @@ alter table public.habits enable row level security;
 alter table public.habit_checkins enable row level security;
 alter table public.water_intake enable row level security;
 alter table public.goals enable row level security;
+alter table public.priority_dismissals enable row level security;
 alter table public.quick_notes enable row level security;
 alter table public.linked_accounts enable row level security;
 alter table public.selected_calendar_ids enable row level security;
@@ -109,6 +119,11 @@ create policy "Users manage own goals" on public.goals for all
   using ((auth.jwt() ->> 'email') = owner_email)
   with check ((auth.jwt() ->> 'email') = owner_email);
 
+drop policy if exists "Users manage own priority dismissals" on public.priority_dismissals;
+create policy "Users manage own priority dismissals" on public.priority_dismissals for all
+  using ((auth.jwt() ->> 'email') = owner_email)
+  with check ((auth.jwt() ->> 'email') = owner_email);
+
 drop policy if exists "Users manage own quick notes" on public.quick_notes;
 create policy "Users manage own quick notes" on public.quick_notes for all
   using ((auth.jwt() ->> 'email') = owner_email)
@@ -127,13 +142,13 @@ create policy "Users manage own selected calendars" on public.selected_calendar_
 -- Browser roles cannot access app-owned rows. The server-only service role is
 -- used by Next.js and bypasses RLS while still applying owner_email filters.
 revoke all on public.habits, public.habit_checkins, public.goals,
-  public.water_intake, public.quick_notes, public.linked_accounts,
-  public.selected_calendar_ids
+  public.water_intake, public.priority_dismissals, public.quick_notes,
+  public.linked_accounts, public.selected_calendar_ids
   from anon, authenticated;
 revoke all on private.linked_account_secrets from anon, authenticated;
 grant all on public.habits, public.habit_checkins, public.goals,
-  public.water_intake, public.quick_notes, public.linked_accounts,
-  public.selected_calendar_ids
+  public.water_intake, public.priority_dismissals, public.quick_notes,
+  public.linked_accounts, public.selected_calendar_ids
   to service_role;
 grant all on private.linked_account_secrets to service_role;
 
@@ -142,6 +157,8 @@ create index if not exists habit_checkins_owner_email_idx on public.habit_checki
 create index if not exists water_intake_owner_date_idx
   on public.water_intake(owner_email, consumed_on, created_at desc);
 create index if not exists goals_owner_email_idx on public.goals(owner_email);
+create index if not exists priority_dismissals_owner_date_idx
+  on public.priority_dismissals(owner_email, dismissed_on);
 create index if not exists quick_notes_owner_email_idx on public.quick_notes(owner_email);
 create index if not exists linked_accounts_owner_email_idx on public.linked_accounts(owner_email);
 create index if not exists selected_calendar_ids_owner_email_idx on public.selected_calendar_ids(owner_email);

@@ -1,6 +1,7 @@
 import { auth } from "@/auth";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { getSupabaseServerClient } from "@/lib/supabase-server";
 import {
   decryptGoogleRefreshToken,
   refreshGoogleAccessToken,
@@ -33,18 +34,38 @@ type CalendarItem = {
   isAllDay: boolean;
   scope: "work" | "personal" | "family";
   color: string;
+  localDate: string;
 };
+
+type PrioritySource = "todo" | "planner" | "event" | "habit" | "goal" | "email";
 
 type PriorityItem = {
   id: string;
   title: string;
   scope: "work" | "personal" | "family";
   done: boolean;
+  source: PrioritySource;
+  dueAt?: string;
 };
 
 type TodoList = { id: string };
-type TodoTask = { id: string; title?: string; status?: string };
-type PlannerTask = { id: string; title?: string; percentComplete?: number };
+type TodoTask = {
+  id: string;
+  title?: string;
+  status?: string;
+  dueDateTime?: { dateTime?: string; timeZone?: string };
+};
+type PlannerTask = {
+  id: string;
+  title?: string;
+  percentComplete?: number;
+};
+type HabitRow = { id: string; name: string };
+type GoalRow = {
+  id: string;
+  title: string;
+  target_date?: string | null;
+};
 type FlaggedMessage = {
   id: string;
   subject?: string;
@@ -59,6 +80,20 @@ function toUtcIso(dateTime: string, timeZone?: string) {
   return dateTime;
 }
 
+function dateInUserTimezone(dateTime: string, timezoneOffsetMinutes: number) {
+  return new Date(
+    new Date(dateTime).getTime() - timezoneOffsetMinutes * 60_000,
+  )
+    .toISOString()
+    .slice(0, 10);
+}
+
+function isDateKey(value: string | null): value is string {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
 async function graphGet<T>(accessToken: string, path: string) {
   const response = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -70,6 +105,8 @@ async function graphGet<T>(accessToken: string, path: string) {
 
 async function loadMicrosoftPriorities(
   accessToken: string,
+  todayKey: string,
+  slot: MicrosoftAccountSlot,
 ): Promise<PriorityItem[]> {
   const priorities: PriorityItem[] = [];
   const lists = await graphGet<{ value?: TodoList[] }>(
@@ -80,30 +117,42 @@ async function loadMicrosoftPriorities(
   for (const list of lists?.value ?? []) {
     const tasks = await graphGet<{ value?: TodoTask[] }>(
       accessToken,
-      `/me/todo/lists/${encodeURIComponent(list.id)}/tasks?$filter=status ne 'completed'&$select=id,title,status&$top=50`,
+      `/me/todo/lists/${encodeURIComponent(list.id)}/tasks?$filter=status ne 'completed'&$select=id,title,status,dueDateTime&$top=50`,
     );
     priorities.push(
-      ...(tasks?.value ?? []).map((task) => ({
-        id: `todo-${task.id}`,
-        title: task.title || "Untitled task",
-        scope: "personal" as const,
-        done: task.status === "completed",
-      })),
+      ...(tasks?.value ?? [])
+        .filter((task) => {
+          const dueDate = task.dueDateTime?.dateTime?.slice(0, 10);
+          return task.status !== "completed" && dueDate && dueDate < todayKey;
+        })
+        .map((task) => ({
+          id: `todo-${slot}-${list.id}-${task.id}`,
+          title: task.title || "Untitled task",
+          scope: slot,
+          done: false,
+          source: "todo" as const,
+          dueAt: task.dueDateTime?.dateTime,
+        })),
     );
   }
 
-  const plannerTasks = await graphGet<{ value?: PlannerTask[] }>(
-    accessToken,
-    "/me/planner/tasks?$filter=percentComplete lt 100&$select=id,title,percentComplete&$top=50",
-  );
-  priorities.push(
-    ...(plannerTasks?.value ?? []).map((task) => ({
-      id: `planner-${task.id}`,
-      title: task.title || "Untitled task",
-      scope: "work" as const,
-      done: (task.percentComplete ?? 0) >= 100,
-    })),
-  );
+  if (slot === "work") {
+    const plannerTasks = await graphGet<{ value?: PlannerTask[] }>(
+      accessToken,
+      "/me/planner/tasks?$select=id,title,percentComplete&$top=50",
+    );
+    priorities.push(
+      ...(plannerTasks?.value ?? [])
+        .filter((task) => (task.percentComplete ?? 0) < 100)
+        .map((task) => ({
+          id: `planner-${task.id}`,
+          title: task.title || "Untitled task",
+          scope: "work" as const,
+          done: false,
+          source: "planner" as const,
+        })),
+    );
+  }
 
   if (process.env.MICROSOFT_ENABLE_FLAGGED_EMAIL_TASKS === "true") {
     const messages = await graphGet<{ value?: FlaggedMessage[] }>(
@@ -114,8 +163,9 @@ async function loadMicrosoftPriorities(
       ...(messages?.value ?? []).map((message) => ({
         id: `mail-${message.id}`,
         title: `Follow up: ${message.subject || "Flagged email"}`,
-        scope: "personal" as const,
+        scope: slot,
         done: false,
+        source: "email" as const,
       })),
     );
   }
@@ -123,9 +173,82 @@ async function loadMicrosoftPriorities(
   return priorities;
 }
 
-export async function GET() {
+async function loadHabitAndGoalPriorities(
+  ownerEmail: string,
+): Promise<PriorityItem[]> {
+  const supabase = getSupabaseServerClient();
+  const habitDateKey = new Date().toISOString().slice(0, 10);
+  const [habitsResult, checkinsResult, goalsResult] = await Promise.all([
+    supabase
+      .from("habits")
+      .select("id,name")
+      .eq("owner_email", ownerEmail)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("habit_checkins")
+      .select("habit_id")
+      .eq("owner_email", ownerEmail)
+      .eq("completed_on", habitDateKey),
+    supabase
+      .from("goals")
+      .select("id,title,target_date")
+      .eq("owner_email", ownerEmail)
+      .eq("status", "active")
+      .order("created_at", { ascending: true }),
+  ]);
+
+  if (habitsResult.error) throw habitsResult.error;
+  if (checkinsResult.error) throw checkinsResult.error;
+  if (goalsResult.error) throw goalsResult.error;
+
+  const completedHabitIds = new Set(
+    (checkinsResult.data ?? []).map((checkin) => checkin.habit_id as string),
+  );
+  const habitPriorities = ((habitsResult.data ?? []) as HabitRow[])
+    .filter((habit) => !completedHabitIds.has(habit.id))
+    .map((habit) => ({
+      id: `habit-${habit.id}`,
+      title: habit.name,
+      scope: "personal" as const,
+      done: false,
+      source: "habit" as const,
+    }));
+  const goalPriorities = ((goalsResult.data ?? []) as GoalRow[]).map((goal) => ({
+    id: `goal-${goal.id}`,
+    title: goal.title,
+    scope: "personal" as const,
+    done: false,
+    source: "goal" as const,
+    dueAt: goal.target_date ?? undefined,
+  }));
+
+  return [...habitPriorities, ...goalPriorities];
+}
+
+async function loadDismissedPriorityIds(ownerEmail: string, date: string) {
+  const { data, error } = await getSupabaseServerClient()
+    .from("priority_dismissals")
+    .select("priority_id")
+    .eq("owner_email", ownerEmail)
+    .eq("dismissed_on", date);
+
+  if (error) throw error;
+  return new Set((data ?? []).map((row) => row.priority_id as string));
+}
+
+export async function GET(request: Request) {
   const session = await auth();
   const cookieStore = await cookies();
+  const requestUrl = new URL(request.url);
+  const requestedDate = requestUrl.searchParams.get("date");
+  const todayKey = isDateKey(requestedDate)
+    ? requestedDate
+    : new Date().toISOString().slice(0, 10);
+  const parsedOffset = Number(requestUrl.searchParams.get("timezoneOffsetMinutes"));
+  const timezoneOffsetMinutes =
+    Number.isInteger(parsedOffset) && Math.abs(parsedOffset) <= 840
+      ? parsedOffset
+      : 0;
   const encryptedGoogleRefreshToken = cookieStore.get(
     "google_calendar_refresh_token",
   )?.value;
@@ -161,7 +284,7 @@ export async function GET() {
     microsoftConnections[slot] = true;
     microsoftTokens[slot] = tokens.access_token;
     livePriorities.push(
-      ...(await loadMicrosoftPriorities(tokens.access_token)),
+      ...(await loadMicrosoftPriorities(tokens.access_token, todayKey, slot)),
     );
     if (tokens.refresh_token) rotatedRefreshTokens[slot] = tokens.refresh_token;
   }
@@ -170,7 +293,11 @@ export async function GET() {
     microsoftTokens.personal = session.accessToken;
     microsoftConnections.personal = true;
     livePriorities.push(
-      ...(await loadMicrosoftPriorities(session.accessToken)),
+      ...(await loadMicrosoftPriorities(
+        session.accessToken,
+        todayKey,
+        "personal",
+      )),
     );
   }
 
@@ -243,6 +370,10 @@ export async function GET() {
             isAllDay: event.isAllDay ?? false,
             scope: slot,
             color: slot === "work" ? "bg-blue-500" : "bg-purple-500",
+            localDate: dateInUserTimezone(
+              toUtcIso(event.start!.dateTime!, event.start!.timeZone),
+              timezoneOffsetMinutes,
+            ),
           })),
       );
     }
@@ -287,9 +418,65 @@ export async function GET() {
               isAllDay: Boolean(event.start?.date),
               scope: "family" as const,
               color: "bg-green-500",
+              localDate:
+                event.start?.date ??
+                dateInUserTimezone(
+                  event.start!.dateTime!,
+                  timezoneOffsetMinutes,
+                ),
             })),
         );
       }
+    }
+  }
+
+  livePriorities.push(
+    ...calendar
+      .filter((event) => event.localDate === todayKey)
+      .map((event) => ({
+        id: `event-${event.id}`,
+        title: event.title,
+        scope: event.scope,
+        done: false,
+        source: "event" as const,
+        dueAt: event.start,
+      })),
+  );
+
+  if (session?.user?.email) {
+    try {
+      livePriorities.push(
+        ...(await loadHabitAndGoalPriorities(session.user.email)),
+      );
+    } catch (error) {
+      console.error("Unable to load habit and goal priorities.", error);
+    }
+  }
+
+  const sourceOrder: Record<PrioritySource, number> = {
+    todo: 0,
+    event: 1,
+    planner: 2,
+    habit: 3,
+    goal: 4,
+    email: 5,
+  };
+  livePriorities.sort(
+    (first, second) => sourceOrder[first.source] - sourceOrder[second.source],
+  );
+
+  let visiblePriorities = livePriorities;
+  if (session?.user?.email) {
+    try {
+      const dismissedIds = await loadDismissedPriorityIds(
+        session.user.email,
+        todayKey,
+      );
+      visiblePriorities = livePriorities.filter(
+        (priority) => !dismissedIds.has(priority.id),
+      );
+    } catch (error) {
+      console.error("Unable to load dismissed priorities.", error);
     }
   }
 
@@ -299,7 +486,7 @@ export async function GET() {
     mode: "microsoft-graph-and-google",
     microsoftConnected: microsoftConnections,
     googleConnected: Boolean(encryptedGoogleRefreshToken),
-    priorities: livePriorities,
+    priorities: visiblePriorities,
     calendar,
     notes: [],
     habits: [],
